@@ -2,6 +2,7 @@ import os
 import google.generativeai as genai
 from PIL import Image
 
+<<<<<<< HEAD
 # --------------------------------------------------
 # LOAD ENVIRONMENT VARIABLES
 # --------------------------------------------------
@@ -16,64 +17,43 @@ if not GEMINI_API_KEY:
     )
 
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+=======
+# Configure Gemini
+genai.configure(
+    api_key=os.environ["GEMINI_API_KEY"]
+)
+
+>>>>>>> fd9f27e (Fix Streamlit deployment)
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-# --------------------------------------------------
-# MAIN LLM FUNCTION
-# --------------------------------------------------
 
-def get_llm_response(
-    prompt_text,
-    task_type,
-    image_path=None,
-    chat_history=None
-):
+def get_llm_response(prompt_text, task_type, image_path=None, chat_history=None):
 
     try:
 
-        # ------------------------------------------
-        # IMAGE → QUESTION EXTRACTION
-        # ------------------------------------------
-
+        # OCR + Question Extraction
         if task_type == "extract_question":
 
             image = Image.open(image_path)
 
             response = model.generate_content([
                 """
-                Read the academic question from this image.
+                Read this academic question and:
 
-                Instructions:
-                - Extract the question exactly.
-                - Preserve equations and symbols.
-                - If a diagram exists, describe it briefly.
-                - Return only the extracted question.
+                1. Extract the question exactly.
+                2. If a diagram exists, describe it briefly.
                 """,
                 image
             ])
 
             return response.text
 
-        # ------------------------------------------
-        # SUBJECT DETECTION
-        # ------------------------------------------
-
+        # Subject Detection
         elif task_type == "detect_subject":
 
             response = model.generate_content(
                 f"""
-                Identify the academic subject of the following question.
-
-                Examples:
-                Mathematics
-                Physics
-                Chemistry
-                Biology
-                Computer Science
-                History
-                Geography
-                Economics
-                Literature
+                Identify the academic subject.
 
                 Return ONLY the subject name.
 
@@ -84,24 +64,20 @@ def get_llm_response(
 
             return response.text.strip()
 
-        # ------------------------------------------
-        # STEP-BY-STEP EXPLANATION
-        # ------------------------------------------
-
+        # Explanation
         elif task_type == "explain_doubt":
 
             response = model.generate_content(
                 f"""
-                You are Askora, an expert AI tutor.
+                You are an expert tutor.
 
                 Explain the following question step-by-step.
 
                 Rules:
                 - Use simple language.
-                - Explain concepts before solving.
-                - Break the solution into numbered steps.
-                - Highlight important formulas if needed.
-                - Make it easy for a school or college student.
+                - Show calculations clearly.
+                - Teach the concept.
+                - Give the final answer.
 
                 Question:
                 {prompt_text}
@@ -110,124 +86,90 @@ def get_llm_response(
 
             return response.text
 
-        # ------------------------------------------
-        # PRACTICE PROBLEM
-        # ------------------------------------------
-
+        # Practice Problem
         elif task_type == "generate_practice_problem":
 
             response = model.generate_content(
                 f"""
-                Based on the explanation below:
-
-                {prompt_text}
-
                 Create ONE similar practice problem.
 
                 Rules:
-                - Similar difficulty
-                - Similar concept
-                - Do NOT provide the answer
-                - Do NOT provide hints
+                - Similar difficulty.
+                - Do NOT provide answer.
+                - Only provide the problem.
+
+                Topic:
+                {prompt_text}
                 """
             )
 
             return response.text
 
-        # ------------------------------------------
-        # QUIZ GENERATOR
-        # ------------------------------------------
-
+        # Quiz Generation
         elif task_type == "generate_quiz":
 
             response = model.generate_content(
                 f"""
-                Create 5 multiple-choice questions based on:
-
-                {prompt_text}
+                Create 5 multiple-choice questions.
 
                 Format:
 
-                Q1.
+                Q1. Question
+
                 A)
                 B)
                 C)
                 D)
 
-                Q2.
-                ...
+                Repeat for 5 questions.
 
-                After all questions add:
+                Do NOT provide answers.
 
-                ANSWER KEY:
-                1.
-                2.
-                3.
-                4.
-                5.
-
-                Keep questions educational and relevant.
+                Topic:
+                {prompt_text}
                 """
             )
 
             return response.text
 
-        # ------------------------------------------
-        # FOLLOW-UP CHAT
-        # ------------------------------------------
-
+        # Follow-up Chat
         elif task_type == "follow_up":
-
-            context = ""
-
-            if chat_history:
-
-                for msg in chat_history[-10:]:
-
-                    if msg["type"] == "text":
-
-                        role = (
-                            "Student"
-                            if msg["role"] == "user"
-                            else "Tutor"
-                        )
-
-                        context += (
-                            f"{role}: "
-                            f"{msg['content']}\n"
-                        )
 
             response = model.generate_content(
                 f"""
-                You are Askora AI Tutor.
+                You are a helpful tutor.
 
-                Previous conversation:
-
-                {context}
-
-                Student follow-up question:
-
+                Student Question:
                 {prompt_text}
 
-                Answer clearly and helpfully.
+                Answer clearly and simply.
                 """
             )
 
             return response.text
 
-        return "Unsupported task."
+        return "Unsupported task"
 
     except Exception as e:
 
-        return f"⚠️ Error: {str(e)}"
+        error_msg = str(e)
 
+        if "429" in error_msg:
+            return """
+⚠️ Gemini free quota reached.
 
-# --------------------------------------------------
-# HELPER FUNCTIONS
-# --------------------------------------------------
+Please wait a minute and try again.
+
+Your uploaded question and previous explanation remain available.
+
+Tip:
+For hackathon demos, avoid repeatedly generating quizzes because each quiz uses an additional Gemini request.
+"""
+
+        return f"⚠️ Error: {error_msg}"
+
 
 def detect_subject(question_text):
-
     return get_llm_response(
         question_text,
         "detect_subject"
@@ -235,7 +177,6 @@ def detect_subject(question_text):
 
 
 def generate_practice_problem(explanation_text):
-
     return get_llm_response(
         explanation_text,
         "generate_practice_problem"
@@ -243,7 +184,6 @@ def generate_practice_problem(explanation_text):
 
 
 def generate_quiz(topic_text):
-
     return get_llm_response(
         topic_text,
         "generate_quiz"
