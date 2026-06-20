@@ -1,5 +1,4 @@
 import os
-from dotenv import load_dotenv
 import google.generativeai as genai
 from PIL import Image
 
@@ -7,7 +6,7 @@ from PIL import Image
 # LOAD ENVIRONMENT VARIABLES
 # --------------------------------------------------
 
-load_dotenv()
+
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -16,8 +15,7 @@ if not GEMINI_API_KEY:
         "GEMINI_API_KEY not found. Please add it to your .env file."
     )
 
-genai.configure(api_key=GEMINI_API_KEY)
-
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 # --------------------------------------------------
