@@ -1,4 +1,13 @@
-streamlit
-google-generativeai
-pillow
-fpdf2
+streamlit>=1.46.0
+
+google-genai>=1.25.0
+
+Pillow>=11.2.1
+
+fpdf2>=2.8.2
+
+pandas>=2.3.0
+
+python-dateutil>=2.9.0
+
+typing-extensions>=4.14.0

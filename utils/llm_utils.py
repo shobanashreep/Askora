@@ -1,92 +1,389 @@
-import os
-import google.generativeai as genai
+import time
+import json
+import re
+from io import BytesIO
+
 from PIL import Image
-
-# Gemini API Key from Streamlit Secrets / Environment
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-
-model = genai.GenerativeModel("gemini-2.5-flash")
+from google import genai
+from google.genai import types
 
 
-def get_llm_response(prompt_text, task_type, image_path=None, chat_history=None):
+# ==========================================================
+# Allowed Subjects
+# ==========================================================
+
+ALLOWED_SUBJECTS = {
+    "Mathematics",
+    "Aptitude",
+    "Physics",
+    "Chemistry",
+    "Biology",
+    "Computer Science",
+    "English",
+    "General Knowledge"
+}
+
+
+# ==========================================================
+# Gemini Client
+# ==========================================================
+
+def get_gemini_client(api_key: str):
+    """
+    Initialize Gemini client.
+    """
+    if not api_key:
+        raise ValueError("Gemini API Key not found.")
+
+    return genai.Client(api_key=api_key)
+
+
+# ==========================================================
+# Production OCR + Explanation Prompt
+# ==========================================================
+
+SYSTEM_PROMPT = """
+You are Askora, an expert AI tutor for students.
+
+Your task:
+
+1. Read the uploaded image carefully.
+2. Extract handwritten or printed academic questions.
+3. Correct OCR mistakes if obvious.
+4. Preserve:
+   - numbers
+   - formulas
+   - equations
+   - symbols
+   - question structure
+
+5. Classify subject STRICTLY as one of:
+
+- Mathematics
+- Aptitude
+- Physics
+- Chemistry
+- Biology
+- Computer Science
+- English
+- General Knowledge
+
+Never create any other subject.
+
+6. Determine difficulty:
+
+- Easy
+- Medium
+- Hard
+
+7. Generate:
+
+- Detailed explanation
+- Key concepts
+- One practice problem
+- Five MCQ quiz questions
+
+IMPORTANT:
+
+Return ONLY VALID JSON.
+
+No markdown.
+No code block.
+No extra text.
+
+JSON FORMAT:
+
+{
+  "subject": "",
+  "difficulty": "",
+  "question": "",
+  "explanation": "",
+  "key_concepts": [
+    ""
+  ],
+  "practice_problem": "",
+  "quiz": [
+    {
+      "question": "",
+      "options": {
+        "A": "",
+        "B": "",
+        "C": "",
+        "D": ""
+      },
+      "answer": "A"
+    }
+  ]
+}
+"""
+
+
+# ==========================================================
+# JSON Cleanup
+# ==========================================================
+
+def clean_json_response(text: str) -> str:
+    """
+    Removes markdown wrappers if Gemini returns them.
+    """
+
+    text = text.strip()
+
+    text = re.sub(r"^```json", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^```", "", text)
+    text = re.sub(r"```$", "", text)
+
+    return text.strip()
+
+
+# ==========================================================
+# Subject Validation
+# ==========================================================
+
+def validate_subject(subject: str) -> str:
+    """
+    Prevent weird subjects like Salary/Finance.
+    """
+
+    if subject in ALLOWED_SUBJECTS:
+        return subject
+
+    subject_lower = subject.lower()
+
+    if any(
+        word in subject_lower
+        for word in [
+            "percentage",
+            "profit",
+            "loss",
+            "salary",
+            "aptitude",
+            "reasoning",
+            "money",
+            "finance"
+        ]
+    ):
+        return "Aptitude"
+
+    return "General Knowledge"
+
+
+# ==========================================================
+# Default Empty Response
+# ==========================================================
+
+def default_response():
+    return {
+        "subject": "General Knowledge",
+        "difficulty": "Medium",
+        "question": "Unable to extract question.",
+        "explanation": "OCR could not confidently read the image.",
+        "key_concepts": [],
+        "practice_problem": "",
+        "quiz": []
+    }
+
+
+# ==========================================================
+# Parse Gemini JSON
+# ==========================================================
+
+def parse_gemini_json(raw_text: str):
+    """
+    Safely parse Gemini JSON response.
+    """
+
+    try:
+        cleaned = clean_json_response(raw_text)
+
+        data = json.loads(cleaned)
+
+        data["subject"] = validate_subject(
+            data.get("subject", "")
+        )
+
+        if data.get("difficulty") not in [
+            "Easy",
+            "Medium",
+            "Hard"
+        ]:
+            data["difficulty"] = "Medium"
+
+        return data
+
+    except Exception:
+        return default_response()
+
+
+# ==========================================================
+# Main Single Gemini Call
+# ==========================================================
+
+def analyze_question_image(
+    image_file,
+    api_key: str
+):
+    try:
+
+        if image_file is None:
+            raise ValueError("No image uploaded.")
+
+        client = get_gemini_client(api_key)
+
+        image = Image.open(image_file)
+
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+
+        image_bytes = buffer.getvalue()
+
+        contents = [
+            SYSTEM_PROMPT,
+            types.Part.from_bytes(
+                data=image_bytes,
+                mime_type="image/png"
+            )
+        ]
+
+        response = None
+
+        MODELS = [
+            "gemini-2.5-flash",
+            "gemini-2.0-flash"
+        ]
+
+        last_error = None
+
+        for model_name in MODELS:
+
+            for attempt in range(3):
+
+                try:
+
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents
+                    )
+
+                    if response and response.text:
+                        return parse_gemini_json(
+                            response.text
+                        )
+
+                except Exception as e:
+
+                    last_error = e
+
+                    error_text = str(e).lower()
+
+                    if (
+                        "503" in error_text
+                        or "unavailable" in error_text
+                    ):
+                        time.sleep(
+                            2 * (attempt + 1)
+                        )
+                        continue
+
+                    if (
+                        "429" in error_text
+                        or "quota" in error_text
+                    ):
+                        raise RuntimeError(
+                            "Gemini quota exceeded. Please try later."
+                        )
+
+                    break
+
+        raise RuntimeError(
+            f"Gemini unavailable. {last_error}"
+        )
+
+    except Exception as e:
+
+        raise RuntimeError(
+            f"Image analysis failed: {str(e)}"
+        )
+# ==========================================================
+# Follow-Up Chat
+# ==========================================================
+
+def ask_followup_question(
+    api_key: str,
+    original_question: str,
+    explanation: str,
+    user_question: str
+):
+    """
+    Context-aware follow-up chat.
+    """
 
     try:
 
-        # ---------------- OCR ----------------
-        if task_type == "extract_question":
-            image = Image.open(image_path)
+        client = get_gemini_client(api_key)
 
-            response = model.generate_content([
-                "Extract the question exactly and describe diagram if present.",
-                image
-            ])
+        prompt = f"""
+You are Askora AI Tutor.
 
-            return response.text
+Original Question:
+{original_question}
 
-        # ---------------- SUBJECT DETECTION ----------------
-        elif task_type == "detect_subject":
-            response = model.generate_content(
-                f"Identify subject. Return only one word.\n\nQuestion:\n{prompt_text}"
-            )
-            return response.text.strip()
+Explanation:
+{explanation}
 
-        # ---------------- EXPLANATION ----------------
-        elif task_type == "explain_doubt":
-            response = model.generate_content(
-                f"""
-                Explain step by step in simple language:
+Student Follow-Up:
+{user_question}
 
-                {prompt_text}
-                """
-            )
-            return response.text
+Answer clearly and simply.
+Keep the answer focused on the original doubt.
+"""
 
-        # ---------------- PRACTICE PROBLEM ----------------
-        elif task_type == "generate_practice_problem":
-            response = model.generate_content(
-                f"""
-                Create ONE similar practice problem.
-                Do NOT give answer.
+        response = client.models.generate_content(
+          model="gemini-2.0-flash",
+          contents=prompt
+        )
 
-                Topic:
-                {prompt_text}
-                """
-            )
-            return response.text
-
-        # ---------------- QUIZ ----------------
-        elif task_type == "generate_quiz":
-            response = model.generate_content(
-                f"""
-                Create 5 MCQs with options A/B/C/D.
-                Do NOT provide answers.
-
-                Topic:
-                {prompt_text}
-                """
-            )
-            return response.text
-
-        # ---------------- FOLLOW UP ----------------
-        elif task_type == "follow_up":
-            response = model.generate_content(prompt_text)
-            return response.text
-
-        return "Unsupported task"
+        return response.text
 
     except Exception as e:
-        if "429" in str(e):
-            return "⚠️ Quota exceeded. Please wait and retry."
-        return f"⚠️ Error: {str(e)}"
 
+        error_text = str(e).lower()
 
-def detect_subject(question_text):
-    return get_llm_response(question_text, "detect_subject")
+        if "429" in error_text:
+            return (
+                "⚠️ Gemini quota limit reached.\n\n"
+                "Please wait a few minutes and try again."
+            )
 
+        if "503" in error_text:
+            return (
+                "🚦 Gemini servers are currently busy.\n\n"
+                "Please try again shortly."
+            )
 
-def generate_practice_problem(explanation_text):
-    return get_llm_response(explanation_text, "generate_practice_problem")
+        return (
+            "❌ Unable to answer follow-up question right now."
+        )
+# ==========================================================
+# Notebook Entry Helper
+# ==========================================================
 
+def create_notebook_entry(
+    result: dict,
+    quiz_score: str
+):
+    """
+    Standard notebook object.
+    """
 
-def generate_quiz(topic_text):
-    return get_llm_response(topic_text, "generate_quiz")
+    return {
+        "subject": result.get("subject", ""),
+        "difficulty": result.get("difficulty", ""),
+        "question": result.get("question", ""),
+        "explanation": result.get("explanation", ""),
+        "practice_problem": result.get(
+            "practice_problem",
+            ""
+        ),
+        "quiz_score": quiz_score
+    }
