@@ -1,4 +1,5 @@
 streamlit
-openai
-fpdf2
+google-generativeai
+python-dotenv
 pillow
+fpdf2
